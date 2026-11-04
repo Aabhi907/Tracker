@@ -1,0 +1,182 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#111}canvas{display:block}</style></head><body>
+<canvas id="cv" width="1440" height="1080"></canvas>
+<script>
+// "Hello, I am Aabishkar" — p5.brush (standalone) painted layers + 2D compositing.
+// ?paint=1 : paints every brush layer once with p5.brush and exposes them (saved to layers/ by render.cjs)
+// default  : loads layers/*.png and animates with window.seek(t) / renderFrame(f)
+const W=1440,H=1080,DUR=8.7,FPS=30;window.NEWDUR=DUR;
+const INK='#0B0B0B',LIME='#C6FF3D',DEEP='#8FD400',PAPER='#F6F6F1';
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)),lerp=(a,b,u)=>a+(b-a)*u,P10=Math.pow(2,-10);
+const ex=(t,t0,d)=>{const x=(t-t0)/d;if(x<=0)return 0;if(x>=1)return 1;return (1-Math.pow(2,-10*x))/(1-P10);};
+const exIn=(t,t0,d)=>{const x=(t-t0)/d;if(x<=0)return 0;if(x>=1)return 1;return (Math.pow(2,10*x-10)-P10)/(1-P10);};
+const exIO=(t,t0,d)=>{const x=(t-t0)/d;if(x<=0)return 0;if(x>=1)return 1;return x<.5?(Math.pow(2,20*x-10)-P10)/(2*(1-P10)):1-(Math.pow(2,-20*x+10)-P10)/(2*(1-P10));};
+const sm=(t,t0,d)=>{const x=clamp((t-t0)/d);return x*x*(3-2*x);};
+const sp=(t,t0,f=2.0,z=.74)=>{const s=t-t0;if(s<=0)return 0;const w=2*Math.PI*f,wd=w*Math.sqrt(1-z*z);return 1-Math.exp(-z*w*s)*(Math.cos(wd*s)+(z*w/wd)*Math.sin(wd*s));};
+const mul32=a=>()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
+const mk=(w,h)=>{const c=document.createElement('canvas');c.width=Math.max(1,Math.ceil(w));c.height=Math.max(1,Math.ceil(h));return c;};
+const PAINT=location.search.includes('paint');
+
+// ---------- shared layout (fonts must be loaded) ----------
+const L={};
+async function fontsAndLayout(){
+  for(const [n,w] of [['P7',700],['P5',500]]){const f=new FontFace(n,`url(fonts/Poppins${w}.woff2)`);await f.load();document.fonts.add(f);}
+  const c=mk(10,10).getContext('2d');
+  c.font='700 100px P7';const nw1=c.measureText('Aabishkar').width/100;
+  L.NS=Math.min(205,930/nw1);L.nameW=nw1*L.NS;L.nameBase=678;L.nameX=720-L.nameW/2;
+  L.HS=250;L.HC=[720,540];            // "Hello," painted centred on (720,540) at 250px
+  L.gs=0.5;L.l1y=415;                 // line-1 pose: Hello scaled 0.5, centre y
+  c.font=`700 ${L.HS*L.gs}px P7`;L.iamW=c.measureText('I am').width;L.spW=c.measureText(' ').width;L.iW=c.measureText('I ').width;
+  L.handleS=96;c.font=`700 ${L.handleS}px P7`;L.handleW=c.measureText('@notaabhi').width;
+  L.markR=130;const gw=L.markR*2+48+L.handleW;L.markX=720-gw/2+L.markR;L.handleX=L.markX+L.markR+48;
+}
+
+// ---------- PAINT PASS (p5.brush standalone) ----------
+async function paintAll(){
+  const font=opentype.parse(await (await fetch('fonts/PoppinsTT-700.ttf')).arrayBuffer());
+  const bc=mk(W,H);brush.load(bc);brush.scaleBrushes(2.4);brush.angleMode(brush.DEGREES);
+  const OUT={};const meta={};
+  const toAlpha=(cv)=>{const g=cv.getContext('2d');const im=g.getImageData(0,0,cv.width,cv.height),d=im.data;let x0=1e9,y0=1e9,x1=-1,y1=-1;
+    for(let i=0,p=0;i<d.length;i+=4,p++){const r=d[i],gg=d[i+1],b=d[i+2];const a=Math.max(255-r,255-gg,255-b)/255;
+      if(a<0.012){d[i+3]=0;continue;}d[i]=(r-255*(1-a))/a;d[i+1]=(gg-255*(1-a))/a;d[i+2]=(b-255*(1-a))/a;d[i+3]=a*255;const x=p%cv.width,y=(p/cv.width)|0;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;}
+    g.putImageData(im,0,0);return [x0,y0,x1,y1];};
+  const paint=(name,seed,fn)=>{brush.seed(seed);brush.noiseSeed(seed);brush.clear('#ffffff');brush.push();brush.translate(-W/2,-H/2);fn();brush.pop();brush.render();
+    const cv=mk(W,H);cv.getContext('2d').drawImage(bc,0,0);const [x0,y0,x1,y1]=toAlpha(cv);const pad=4;const bx=Math.max(0,x0-pad),by=Math.max(0,y0-pad),bw=Math.min(W,x1+pad)-bx,bh=Math.min(H,y1+pad)-by;
+    const cr=mk(bw,bh);cr.getContext('2d').drawImage(cv,bx,by,bw,bh,0,0,bw,bh);OUT[name]=cr;meta[name]={x:bx,y:by,w:bw,h:bh};return cv;};
+  // 1) lime slash: long tapered watercolour stroke centred on (720,540)
+  paint('slash',11,()=>{const band=(len,hw,cy,wob,ph)=>{const P=[],N=48;for(let i=0;i<=N;i++){const u=i/N,x=720-len/2+u*len,w=hw*Math.pow(Math.sin(Math.PI*clamp(u*1.08-0.02,0,1)),0.35)*(1+0.12*Math.sin(u*9+ph));P.push([x,cy-w+Math.sin(u*2.6+ph)*wob]);}
+      for(let i=N;i>=0;i--){const u=i/N,x=720-len/2+u*len,w=hw*Math.pow(Math.sin(Math.PI*clamp(u*1.08-0.02,0,1)),0.35)*(1+0.1*Math.cos(u*7+ph));P.push([x,cy+w*0.9+Math.sin(u*2.6+ph)*wob]);}return P;};
+    brush.noStroke();brush.fill(LIME,235);brush.fillBleed(0.22);brush.fillTexture(0.55,0.65,true,0.04);brush.polygon(band(1120,86,540,10,0.3));
+    brush.fill(DEEP,70);brush.fillBleed(0.15);brush.fillTexture(0.6,0.4,true,0.04);brush.polygon(band(980,26,590,8,1.1));brush.noFill();});
+  // 2) "Hello," sketch lettering: ink hatch inside each glyph + double pen outline
+  const adv=font.getAdvanceWidth('Hello,',L.HS);const base=L.HC[1]+0.35*L.HS;const glyphs=[];
+  font.forEachGlyph('Hello,',L.HC[0]-adv/2,base,L.HS,{},(gl,x,y,fs)=>{const p=gl.getPath(x,y,fs);const C=[];let cur=null,px=0,py=0;const pu=(a,b)=>{cur.push([a,b]);px=a;py=b;};
+    for(const c of p.commands){if(c.type==='M'){cur=[];C.push(cur);pu(c.x,c.y);}else if(c.type==='L')pu(c.x,c.y);else if(c.type==='Q'){const x0=px,y0=py;for(let i=1;i<=10;i++){const u=i/10;pu((1-u)*(1-u)*x0+2*(1-u)*u*c.x1+u*u*c.x,(1-u)*(1-u)*y0+2*(1-u)*u*c.y1+u*u*c.y);}}else if(c.type==='C'){const x0=px,y0=py;for(let i=1;i<=12;i++){const u=i/12,a=(1-u)**3,b=3*(1-u)**2*u,d=3*(1-u)*u*u,e=u**3;pu(a*x0+b*c.x1+d*c.x2+e*c.x,a*y0+b*c.y1+d*c.y2+e*c.y);}}}
+    if(C.length)glyphs.push(C.map(c=>c.length>2&&Math.hypot(c[0][0]-c[c.length-1][0],c[0][1]-c[c.length-1][1])<0.5?c.slice(0,-1):c));});
+  const full=paint('hello_full',21,()=>{brush.noStroke();brush.hatchStyle('pen',INK,1.6);brush.hatch(5.8,45,{rand:0.08});
+      for(const G of glyphs)brush.hatchArray(G.map(c=>new brush.Polygon(c)));brush.noHatch();
+      brush.set('pen',INK,3.0);for(const G of glyphs)for(const c of G)brush.polygon(c);
+      brush.set('HB',INK,1.8);for(const G of glyphs)for(const c of G)brush.polygon(c.map(([x,y])=>[x+2.2,y-1.6]));});
+  delete OUT.hello_full;
+  // cut one sprite per letter (mask = glyph fill + thick stroke, so the wobbly outline stays)
+  meta.letters=[];glyphs.forEach((G,i)=>{let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;for(const c of G)for(const [x,y] of c){x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y);}
+    const pad=12;const bx=Math.floor(x0-pad),by=Math.floor(y0-pad),bw=Math.ceil(x1-x0+2*pad),bh=Math.ceil(y1-y0+2*pad);
+    const m=mk(bw,bh),mg=m.getContext('2d');const pth=new Path2D();for(const c of G){c.forEach(([x,y],k)=>k?pth.lineTo(x-bx,y-by):pth.moveTo(x-bx,y-by));pth.closePath();}
+    mg.fillStyle='#000';mg.fill(pth,'evenodd');mg.lineWidth=16;mg.lineJoin='round';mg.strokeStyle='#000';mg.stroke(pth);
+    const s=mk(bw,bh),sg=s.getContext('2d');sg.drawImage(full,bx,by,bw,bh,0,0,bw,bh);sg.globalCompositeOperation='destination-in';sg.drawImage(m,0,0);
+    OUT['L'+i]=s;meta.letters.push({x:bx,y:by,w:bw,h:bh});});
+  // 3) scribble underline under the name
+  paint('scribble',31,()=>{const y=L.nameBase+58,x0=L.nameX+6,x1=L.nameX+L.nameW-4;
+    brush.set('charcoal',INK,2.4);brush.spline([[x0,y+6,0.5],[lerp(x0,x1,0.3),y-4,1],[lerp(x0,x1,0.7),y+2,1.2],[x1,y-16,0.9],[x1-40,y+4,0.8],[lerp(x0,x1,0.6),y+22,0.9],[lerp(x0,x1,0.25),y+26,0.6]],0.55);});
+  // 4) emphasis sparks at the name's top-right
+  const ax=L.nameX+L.nameW+26,ay=L.nameBase-L.NS*0.78;meta.spark=[ax,ay];
+  [-58,-22,14].forEach((a,i)=>paint('spark'+i,41+i,()=>{const r=Math.PI*a/180;brush.set('charcoal',INK,1.8);brush.line(ax+Math.cos(r)*24,ay+Math.sin(r)*24,ax+Math.cos(r)*(i===1?92:72),ay+Math.sin(r)*(i===1?92:72));}));
+  // 5) brand mark: lime watercolour disk + ink dot (separate passes so they don't bleed together)
+  paint('disk',57,()=>{brush.noStroke();brush.fill(LIME,240);brush.fillBleed(0.1);brush.fillTexture(0.45,0.7,true,0);brush.circle(720,540,L.markR,0.05);brush.noFill();});
+  paint('dot',61,()=>{brush.noStroke();brush.wash(INK,255);brush.circle(720,540,40,0.08);brush.noWash();});
+  window.LAYERS=Object.fromEntries(Object.entries(OUT).map(([k,c])=>[k,c.toDataURL('image/png')]));window.META=meta;
+  // preview of the settled state
+  window.DONE=true;
+}
+
+// ---------- ANIMATION PASS ----------
+const IMG={};let META=null,PAPERC=null;
+async function loadLayers(){META=await (await fetch('layers/meta.json')).json();const names=['slash','scribble','spark0','spark1','spark2','disk','dot',...META.letters.map((_,i)=>'L'+i)];
+  await Promise.all(names.map(n=>new Promise((res,rej)=>{const i=new Image();i.onload=()=>{IMG[n]=i;res();};i.onerror=()=>rej(new Error(n));i.src='layers/'+n+'.png';})));
+  // paper: warm off-white, fibres and specks (seeded so every worker matches), soft vignette
+  PAPERC=mk(W*1.08,H*1.08);const g=PAPERC.getContext('2d'),R=mul32(7);g.fillStyle=PAPER;g.fillRect(0,0,PAPERC.width,PAPERC.height);
+  for(let i=0;i<9000;i++){const x=R()*PAPERC.width,y=R()*PAPERC.height;g.fillStyle=R()<0.5?`rgba(120,110,90,${0.025+R()*0.04})`:`rgba(255,255,255,${0.2+R()*0.3})`;g.fillRect(x,y,1+R()*1.6,1+R()*1.6);}
+  g.lineWidth=0.8;for(let i=0;i<700;i++){const x=R()*PAPERC.width,y=R()*PAPERC.height,a=R()*Math.PI,l=6+R()*22;g.strokeStyle=`rgba(140,130,110,${0.04+R()*0.05})`;g.beginPath();g.moveTo(x,y);g.quadraticCurveTo(x+Math.cos(a)*l*0.5+R()*4,y+Math.sin(a)*l*0.5+R()*4,x+Math.cos(a)*l,y+Math.sin(a)*l);g.stroke();}
+  const vg=g.createRadialGradient(PAPERC.width/2,PAPERC.height/2,PAPERC.height*0.35,PAPERC.width/2,PAPERC.height/2,PAPERC.width*0.62);vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(60,55,40,0.10)');g.fillStyle=vg;g.fillRect(0,0,PAPERC.width,PAPERC.height);
+}
+const cv=document.getElementById('cv'),X=cv.getContext('2d');const TMP=mk(W,H),TX=TMP.getContext('2d');
+// sprite drawn with its painted centre (layer coords) mapped to (cx,cy)
+function spr(n,cx,cy,sx=1,sy=sx,rot=0,a=1,blur=0,ox=null,oy=null){const m=n.startsWith('L')?META.letters[+n.slice(1)]:META[n];const im=IMG[n];if(a<=0.002)return;
+  const ax=ox??(m.x+m.w/2),ay=oy??(m.y+m.h/2);X.save();X.globalAlpha=a;if(blur>0.3)X.filter=`blur(${blur.toFixed(1)}px)`;X.translate(cx,cy);X.rotate(rot);X.scale(sx,sy);X.drawImage(im,m.x-ax,m.y-ay);X.restore();}
+// sprite revealed left→right along its own x with a soft edge (u: 0..1)
+function sprWipe(n,u,cx,cy,sx=1,sy=sx,rot=0,a=1,soft=110){const m=META[n],im=IMG[n];if(u<=0||a<=0)return;
+  TX.setTransform(1,0,0,1,0,0);TX.globalCompositeOperation='source-over';TX.clearRect(0,0,m.w+2,m.h+2);TX.drawImage(im,0,0);
+  if(u<1){const e=lerp(-soft,m.w+soft,u);const gr=TX.createLinearGradient(e-soft,0,e,0);gr.addColorStop(0,'rgba(0,0,0,1)');gr.addColorStop(1,'rgba(0,0,0,0)');TX.globalCompositeOperation='destination-in';TX.fillStyle=gr;TX.fillRect(0,0,m.w+2,m.h+2);TX.globalCompositeOperation='source-over';}
+  X.save();X.globalAlpha=a;X.translate(cx,cy);X.rotate(rot);X.scale(sx,sy);X.drawImage(TMP,0,0,m.w,m.h,-m.w/2,-m.h/2,m.w,m.h);X.restore();}
+function txt(s,x,y,size,col,a=1,blur=0,w=700){if(a<=0.002)return;X.save();X.globalAlpha=a;if(blur>0.3)X.filter=`blur(${blur.toFixed(1)}px)`;X.font=`${w} ${size}px P${w===700?7:5}`;X.fillStyle=col;X.textBaseline='alphabetic';X.fillText(s,x,y);X.restore();}
+// shared exit: sideways smear (-520px, scaleX 1→1.9, blur→18, fade) around (cx,cy)
+const smear=(t,t0)=>{const u=exIn(t,t0,0.42);return {dx:-520*u,sx:1+0.9*u,blur:18*u,a:1-u};};
+function withSmear(t,t0,cx,cy,fn){const s=smear(t,t0);if(s.a<=0.002)return;X.save();X.translate(cx+s.dx,cy);X.scale(s.sx,1);X.translate(-cx,-cy);fn(s);X.restore();}
+
+function draw(t){X.setTransform(1,0,0,1,0,0);X.globalAlpha=1;X.filter='none';
+  const k=1+0.035*(t/DUR);X.translate(W/2,H/2);X.scale(k,k);X.translate(-W/2,-H/2);
+  X.drawImage(PAPERC,-W*0.04,-H*0.04);
+  const NS=L.NS,nb=L.nameBase,EX=5.7;
+  // --- lime slash: paints in diagonally (hook) → swings behind the name → gathers into the mark
+  {const sm0=META.slash;const sw=sp(t,2.25,1.55,0.62);const col=sm(t,5.72,0.36);
+    let cx=lerp(720,720,sw),cy=lerp(575,nb-NS*0.24,sw),rot=lerp(-13,-2,sw)*Math.PI/180,sx=lerp(1.12,(L.nameW+150)/1120,sw),sy=lerp(1.05,0.98,sw);
+    cx=lerp(cx,720,col);cy=lerp(cy,540,col);rot=lerp(rot,0,col);sx=lerp(sx,0.13,col);sy=lerp(sy,1.5,col);
+    sprWipe('slash',exIO(t,-0.12,0.55),cx,cy,sx,sy,rot,1-sm(t,5.92,0.14));}
+  // --- line 1: "Hello," sketch letters (blur-rise each) then shrink up-left; "I am" joins
+  const mv=sp(t,2.3,1.8,0.72);const l1W=(META.letters.reduce((m,l)=>Math.max(m,l.x+l.w),0)-META.letters[0].x)*L.gs+L.spW+L.iamW;
+  const helloW1=(META.letters[META.letters.length-1].x+META.letters[META.letters.length-1].w-META.letters[0].x);
+  const l1Left=720-l1W/2;const gx1=l1Left+(L.HC[0]-META.letters[0].x)*L.gs;
+  const gx=lerp(720,gx1,mv),gy=lerp(500,L.l1y,mv),gs=lerp(1,L.gs,mv);
+  withSmear(t,EX,720,L.l1y,(s)=>{
+    META.letters.forEach((m,i)=>{const ti=0.42+i*0.09;if(t<ti-0.01)return;const e=ex(t,ti,0.38),spr_=sp(t,ti,2.2,0.7);const ax=m.x+m.w/2,ay=m.y+m.h/2;
+      spr('L'+i,gx+(ax-L.HC[0])*gs,gy+(ay-L.HC[1])*gs+30*(1-spr_)*gs,gs*lerp(1.22,1,spr_),gs*lerp(1.22,1,spr_),0,sm(t,ti,0.15)*s.a,14*(1-e)+s.blur);});
+    const iamX=gx1+(helloW1-(L.HC[0]-META.letters[0].x))*L.gs+L.spW,base1=L.l1y+0.35*L.HS*L.gs;
+    [['I',iamX,2.55],['am',iamX+L.iW,2.66]].forEach(([w,x,t0])=>{const e=ex(t,t0,0.38),q=sp(t,t0,2.2,0.7);if(t<t0)return;X.save();X.translate(x,base1+30*(1-q));X.scale(lerp(1.22,1,q),lerp(1.22,1,q));txt(w,0,0,L.HS*L.gs,INK,sm(t,t0,0.15)*s.a,14*(1-e)+s.blur);X.restore();});});
+  // --- name: per-letter blur-rise on the lime stroke
+  withSmear(t,EX+0.06,720,nb-NS*0.35,(s)=>{X.font=`700 ${NS}px P7`;const word='Aabishkar';let x=L.nameX;for(let i=0;i<word.length;i++){const ch=word[i];const cw=X.measureText(ch).width;const t0=2.82+i*0.045;
+      if(t>=t0){const e=ex(t,t0,0.4),q=sp(t,t0,2.2,0.7);X.save();X.translate(x+cw/2,nb+34*(1-q));X.scale(lerp(1.22,1,q),lerp(1.22,1,q));txt(ch,-cw/2,0,NS,INK,sm(t,t0,0.15)*s.a,14*(1-e)+s.blur);X.restore();}x+=cw;}});
+  // --- scribble underline + sparks
+  withSmear(t,EX+0.1,720,nb+60,(s)=>{const m=META.scribble;sprWipe('scribble',exIO(t,3.38,0.5),m.x+m.w/2,m.y+m.h/2,1,1,0,s.a,70);
+    [0,1,2].forEach(i=>{const t0=3.62+i*0.06;if(t<t0)return;const q=sp(t,t0,2.4,0.55);const [ax,ay]=META.spark;spr('spark'+i,ax,ay,q,q,0,sm(t,t0,0.1)*s.a,s.blur,ax,ay);});});
+  // --- end: lime disk mark lands, ink dot drops in, @notaabhi reveals from behind the mark
+  if(t>5.9){const q=sp(t,5.95,2.0,0.6);const sl=sp(t,6.38,1.8,0.74);const mx=lerp(720,L.markX,sl);
+    const hb=540+0.35*L.handleS;const hp=exIO(t,6.5,0.6);if(hp>0){X.save();X.beginPath();X.rect(mx,0,(L.handleX-mx)+(L.handleW+30)*hp,H);X.clip();X.save();X.translate(lerp(-70,0,ex(t,6.5,0.7)),0);txt('@notaabhi',L.handleX,hb,L.handleS,INK,1,10*(1-ex(t,6.5,0.5)));X.restore();X.restore();}
+    spr('disk',mx,540,lerp(0.2,1,q),lerp(0.2,1,q),(1-q)*-0.35,sm(t,5.93,0.1));
+    if(t>6.1){const d=sp(t,6.12,2.4,0.55);spr('dot',mx,540-40*(1-d),lerp(0.3,1,d),lerp(0.3,1,d),0,sm(t,6.1,0.08));}}
+}
+window.seek=t=>draw(t);
+const ACC=mk(W,H),AX=ACC.getContext('2d');
+window.renderFrame=(f,K=6)=>{for(let k=0;k<K;k++){const tt=f/FPS+((k+0.5)/K-0.5)*(0.5/FPS);draw(clamp(tt,0,DUR-0.001));AX.globalAlpha=1/(k+1);AX.drawImage(cv,0,0);}AX.globalAlpha=1;return ACC.toDataURL('image/jpeg',0.94);};
+window.snap=t=>{draw(t);return cv.toDataURL('image/jpeg',0.9);};
+
+// ---------- SFX (sparse: key moves only) ----------
+window.renderAudio=async()=>{const SR=48000,N=Math.ceil(DUR*SR);const ac=new OfflineAudioContext(2,N,SR);const q=x=>Math.round(Math.max(0,x)*SR)/SR;
+  const master=ac.createGain();master.gain.value=0.8;master.connect(ac.destination);
+  const verb=ac.createConvolver();{const len=Math.floor(SR*1.6),b=ac.createBuffer(2,len,SR),R=mul32(3);for(let c=0;c<2;c++){const d=b.getChannelData(c);for(let i=0;i<len;i++)d[i]=(R()*2-1)*Math.pow(1-i/len,3.2);}verb.buffer=b;}const vg=ac.createGain();vg.gain.value=0.35;verb.connect(vg);vg.connect(master);
+  let seed=1;const nbuf=d=>{const n=Math.ceil(d*SR),b=ac.createBuffer(1,n,SR),a=b.getChannelData(0),R=mul32(seed++);for(let i=0;i<n;i++)a[i]=R()*2-1;return b;};
+  const nz=(t,d)=>{const s=ac.createBufferSource();s.buffer=nbuf(d);s.start(q(t));s.stop(q(t+d));return s;};
+  const osc=(type,t,d,f0,f1)=>{const o=ac.createOscillator();o.type=type;o.frequency.setValueAtTime(f0,q(t));o.frequency.exponentialRampToValueAtTime(Math.max(1,f1),q(t+d));o.start(q(t));o.stop(q(t+d+0.05));return o;};
+  const filt=(type,f,Q=0.8)=>{const b=ac.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=Q;return b;};
+  const out=(node,pan=0,rev=0.15)=>{const p=ac.createStereoPanner();p.pan.value=pan;node.connect(p);p.connect(master);if(rev>0){const g=ac.createGain();g.gain.value=rev;node.connect(g);g.connect(verb);}};
+  const env=(g,t,a,pk,d)=>{g.gain.setValueAtTime(0,q(t));g.gain.linearRampToValueAtTime(pk,q(t+a));g.gain.setTargetAtTime(0,q(t+a),d/4);};
+  // wet brush swish across paper
+  const swish=(t,d,a,p0=-0.5,p1=0.5)=>{const s=nz(t,d+0.1);const bp=filt('bandpass',900,0.9);bp.frequency.setValueAtTime(700,q(t));bp.frequency.exponentialRampToValueAtTime(3800,q(t+d*0.45));bp.frequency.exponentialRampToValueAtTime(1400,q(t+d));const hp=filt('highpass',250);
+    const g=ac.createGain();g.gain.setValueAtTime(0.0001,q(t));g.gain.exponentialRampToValueAtTime(0.5*a,q(t+d*0.4));g.gain.exponentialRampToValueAtTime(0.0001,q(t+d));const p=ac.createStereoPanner();p.pan.setValueAtTime(p0,q(t));p.pan.linearRampToValueAtTime(p1,q(t+d));s.connect(hp);hp.connect(bp);bp.connect(g);g.connect(p);p.connect(master);const r=ac.createGain();r.gain.value=0.2;g.connect(r);r.connect(verb);};
+  // pen scratching (soft, modulated)
+  const scratch=(t,d,a,pan=0)=>{const s=nz(t,d);const bp=filt('bandpass',3000,1.1);const g=ac.createGain();g.gain.setValueAtTime(0.0001,q(t));g.gain.exponentialRampToValueAtTime(0.16*a,q(t+0.06));g.gain.setValueAtTime(0.16*a,q(t+d-0.12));g.gain.exponentialRampToValueAtTime(0.0001,q(t+d));
+    const am=ac.createGain();am.gain.value=0.55;const lfo=ac.createOscillator();lfo.frequency.value=11;const lg=ac.createGain();lg.gain.value=0.45;lfo.connect(lg);lg.connect(am.gain);lfo.start(q(t));lfo.stop(q(t+d));s.connect(bp);bp.connect(am);am.connect(g);out(g,pan,0.08);};
+  const air=(tEnd,d,a,p0=0,p1=0)=>{const t=tEnd-d;const s=nz(t,d+0.35);const lp=filt('lowpass',400,0.7);lp.frequency.setValueAtTime(350,q(t));lp.frequency.exponentialRampToValueAtTime(3200,q(tEnd));lp.frequency.exponentialRampToValueAtTime(500,q(tEnd+0.3));
+    const g=ac.createGain();g.gain.setValueAtTime(0.0001,q(t));g.gain.exponentialRampToValueAtTime(0.42*a,q(tEnd));g.gain.exponentialRampToValueAtTime(0.0001,q(tEnd+0.32));const p=ac.createStereoPanner();p.pan.setValueAtTime(p0,q(t));p.pan.linearRampToValueAtTime(p1,q(tEnd+0.2));s.connect(lp);lp.connect(g);g.connect(p);p.connect(master);const r=ac.createGain();r.gain.value=0.3;g.connect(r);r.connect(verb);};
+  const bub=(t,a,f=420,pan=0)=>{const o=osc('sine',t,0.09,f*1.7,f);const g=ac.createGain();env(g,t,0.004,0.32*a,0.16);o.connect(g);out(g,pan,0.12);};
+  const glint=(t,a,pan=0)=>{[2637,3951,5274].forEach((f,i)=>{const o=osc('sine',t,0.6,f,f*1.002);const g=ac.createGain();env(g,t+i*0.018,0.003,0.05*a/(1+i*0.6),0.55-i*0.12);o.connect(g);out(g,pan+(i-1)*0.2,0.35);});};
+  const tap=(t,a,pan=0)=>{const s=nz(t,0.05);const bp=filt('bandpass',2600,1.4);const g=ac.createGain();env(g,t,0.001,0.35*a,0.035);s.connect(bp);bp.connect(g);out(g,pan,0.05);const o=osc('sine',t,0.04,1900,1500);const g2=ac.createGain();env(g2,t,0.001,0.12*a,0.035);o.connect(g2);out(g2,pan,0.05);};
+  const hit=(t,a)=>{const o=osc('sine',t,0.35,130,42);const g=ac.createGain();env(g,t,0.003,0.7*a,0.32);o.connect(g);out(g,0,0.1);const s=nz(t,0.12);const lp=filt('lowpass',1400);const g2=ac.createGain();env(g2,t,0.001,0.22*a,0.08);s.connect(lp);lp.connect(g2);out(g2,0,0.2);};
+  const subdrop=(t,a,d=0.6)=>{const o=osc('sine',t,d,72,30);const g=ac.createGain();env(g,t,0.01,0.45*a,d);o.connect(g);out(g,0,0);};
+  // cues
+  swish(0.0,0.5,1.0,-0.6,0.6);                 // lime slash paints in
+  scratch(0.42,0.75,0.8,-0.1);                   // "Hello," letters sketch in
+  air(2.45,0.42,0.75,0.4,-0.2);                  // stroke swings under the name
+  bub(2.86,0.8,380,-0.3);glint(3.1,0.6,0.3);     // name lands
+  scratch(3.38,0.5,0.9,0.2);                     // scribble underline
+  tap(3.63,0.6,0.5);                             // sparks
+  air(5.86,0.4,0.85,0.5,-0.6);                   // smear exit
+  hit(5.97,0.85);subdrop(5.97,0.8);glint(6.02,0.9);// mark lands
+  bub(6.15,0.9,300,0);                           // ink dot
+  swish(6.48,0.5,0.45,-0.2,0.5);tap(6.52,0.4,0.3);// @notaabhi reveals
+  const buf=await ac.startRendering();window.AUD=[buf.getChannelData(0),buf.getChannelData(1)];return buf.length;};
+window.audChunk=(ch,s,n)=>{const a=window.AUD[ch].subarray(s,s+n);const u8=new Uint8Array(a.buffer,a.byteOffset,a.byteLength);let str='';for(let i=0;i<u8.length;i+=0x8000)str+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));return btoa(str);};
+
+(async()=>{try{await fontsAndLayout();
+  if(PAINT){await new Promise((res,rej)=>{let n=0;for(const s of ['/libs/brush_demo/node_modules/p5.brush/dist/brush.js','node_modules/opentype.js/dist/opentype.min.js']){const e=document.createElement('script');e.src=s;e.onload=()=>{if(++n===2)res();};e.onerror=()=>rej(new Error(s));document.head.appendChild(e);}});await paintAll();}
+  else{await loadLayers();draw(4.5);window.READY=true;}}catch(e){window.ERR=String(e.stack||e);window.DONE=true;window.READY=true;}})();
+</script></body></html>
